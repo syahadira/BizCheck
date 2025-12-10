@@ -1,0 +1,8 @@
+streamlit
+pandas
+textblob
+streamlit-option-menu
+streamlit-lottie
+google-generativeai
+fpdf
+requests

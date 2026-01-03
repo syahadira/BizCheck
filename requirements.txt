@@ -6,3 +6,4 @@ streamlit-lottie
 google-generativeai
 fpdf
 requests
+duckduckgo-search

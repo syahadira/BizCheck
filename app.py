@@ -37,17 +37,17 @@ except ImportError:
 st.set_page_config(page_title="BizCheck Pro", page_icon="🚀", layout="wide")
 
 # --- 0. API CONFIGURATION (SECURE MODE) ---
-# Kod ini akan cuba cari API Key dalam 'Secrets' dulu.
-# Kalau tak jumpa (contohnya masa run di laptop), dia guna key backup.
+# Kod ini HANYA akan baca dari Streamlit Secrets.
+# TIADA lagi key yang hardcoded di sini.
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     else:
-        # Fallback Key (Untuk Local Demo sahaja)
-        genai.configure(api_key="AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ")
+        st.error("🚨 API Key hilang! Sila set GOOGLE_API_KEY di Streamlit Secrets.")
+        st.stop() # App akan berhenti di sini kalau tiada key
 except Exception as e:
-    # Kalau ada error lain, guna fallback
-    genai.configure(api_key="AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ")
+    st.error(f"🚨 Masalah Konfigurasi API: {e}")
+    st.stop()
 
 # --- 1. DATABASE SETUP ---
 def init_db():
@@ -591,7 +591,6 @@ def main():
         st.info("Powered by Google Gemini 2.0 Flash (Smart Mode)")
         
         # KEY DIHANDLE SECARA GLOBAL DI ATAS (Section 0)
-        # Jadi tak perlu hardcode key di sini lagi.
         
         if 'chat_history' not in st.session_state: st.session_state['chat_history'] = []
         for chat in st.session_state['chat_history']:

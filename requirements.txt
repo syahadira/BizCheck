@@ -1,9 +1,10 @@
 streamlit
 pandas
+numpy
 textblob
-streamlit-option-menu
-streamlit-lottie
 google-generativeai
 fpdf
-requests
-duckduckgo-search
+streamlit-option-menu
+streamlit-lottie
+googlesearch-python
+pytrends

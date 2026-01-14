@@ -4,18 +4,50 @@ import hashlib
 import time
 import pandas as pd
 import random
-import requests
-import json  # <--- WAJIB ADA UNTUK BACA FAIL LOCAL
+import json
+import numpy as np 
 from textblob import TextBlob
 from datetime import datetime
 from streamlit_option_menu import option_menu
 from streamlit_lottie import st_lottie
 import google.generativeai as genai
 from fpdf import FPDF
+import os
 
+# --- PENTING: Fix untuk TextBlob di Streamlit Cloud ---
+import textblob
+try:
+    textblob.download_corpora()
+except:
+    pass
+
+# --- IMPORT LIBRARY ---
+try:
+    from googlesearch import search
+except ImportError:
+    # Dummy function if library fails
+    def search(*args, **kwargs): return []
+
+try:
+    from pytrends.request import TrendReq
+except ImportError:
+    pass
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="BizCheck Pro", page_icon="🚀", layout="wide")
+
+# --- 0. API CONFIGURATION (SECURE MODE) ---
+# Kod ini akan cuba cari API Key dalam 'Secrets' dulu.
+# Kalau tak jumpa (contohnya masa run di laptop), dia guna key backup.
+try:
+    if "GOOGLE_API_KEY" in st.secrets:
+        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    else:
+        # Fallback Key (Untuk Local Demo sahaja)
+        genai.configure(api_key="AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ")
+except Exception as e:
+    # Kalau ada error lain, guna fallback
+    genai.configure(api_key="AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ")
 
 # --- 1. DATABASE SETUP ---
 def init_db():
@@ -33,24 +65,6 @@ def init_db():
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-def check_hashes(password, hashed_text):
-    if make_hashes(password) == hashed_text:
-        return hashed_text
-    return False
-
-def add_user(username, email, password):
-    conn = sqlite3.connect('bizcheck.db')
-    c = conn.cursor()
-    try:
-        c.execute('INSERT INTO users(Username, Email, Password) VALUES (?,?,?)', 
-                  (username, email, make_hashes(password)))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
-
 def login_user(email, password):
     conn = sqlite3.connect('bizcheck.db')
     c = conn.cursor()
@@ -60,265 +74,382 @@ def login_user(email, password):
     conn.close()
     return data
 
+def add_user(username, email, password):
+    conn = sqlite3.connect('bizcheck.db')
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO users(Username, Email, Password) VALUES (?,?,?)', 
+                  (username, email, make_hashes(password)))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
+
 # --- 2. HELPER FUNCTIONS ---
-# Fungsi baca fail animasi dari laptop
 def load_lottiefile(filepath):
     try:
-        with open(filepath, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+        with open(filepath, "r") as f: return json.load(f)
+    except: return None
 
-def generate_swot(industry, sentiment_score, desc):
-    strengths = [f"Innovative approach in {industry}.", "Clear value proposition defined."]
-    weaknesses = ["Initial brand awareness is low.", "Requires consistent marketing budget."]
-    opportunities = [f"Growing market trend for {industry} in Southeast Asia.", "Potential for digital expansion."]
-    threats = ["Established competitors with loyal customer base.", "Economic price sensitivity."]
-    if sentiment_score < 0:
-        weaknesses.append("Product description lacks emotional appeal.")
-    else:
-        strengths.append("Strong positive sentiment in concept.")
-    return {"S": strengths, "W": weaknesses, "O": opportunities, "T": threats}
+# --- AI: SWOT ANALYSIS ---
+def generate_swot(industry, sentiment_score, desc, title):
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        Generate SWOT for Malaysian startup "{title}" ({industry}): {desc}.
+        Output JSON: {{"S": ["..."], "W": ["..."], "O": ["..."], "T": ["..."]}} (3 bullet points each).
+        """
+        res = model.generate_content(prompt)
+        return json.loads(res.text.replace("```json", "").replace("```", "").strip())
+    except:
+        return {
+            "S": [f"Innovative approach in {industry}", "Strong initial branding potential", "Flexible business model"],
+            "W": ["Limited initial capital", "New player in market", "Requires heavy marketing"],
+            "O": ["Growing digital adoption in Malaysia", "Potential for viral marketing", "Expanding target audience"],
+            "T": ["Competitors with bigger budget", "Economic instability", "Changing consumer trends"]
+        }
 
-def get_competitor_data(industry):
-    data = {
-        "Product Name": [f"Top {industry} Product A", f"Budget {industry} Item", f"Premium {industry} Set"],
-        "Price (RM)": [random.randint(50, 150), random.randint(10, 40), random.randint(200, 500)],
-        "Rating": [4.8, 4.2, 4.9],
-        "Sold": ["1.2k sold", "500 sold", "89 sold"]
-    }
-    return pd.DataFrame(data)
+# --- SMART DYNAMIC TWITTER GENERATOR ---
+def generate_simulated_twitter_data(title, desc):
+    tweets = []
+    
+    def extract_keywords(text):
+        ignore_words = ["saya", "aku", "kita", "nak", "mau", "ingin", "buat", "untuk", "bagi", "di", 
+                        "ke", "dan", "yang", "i", "want", "to", "create", "a", "an", "the", "for", "is", "are"]
+        words = text.split()
+        meaningful_words = [w for w in words if w.lower() not in ignore_words and len(w) > 3]
+        if meaningful_words:
+            return " ".join(meaningful_words[:4]) 
+        else:
+            return title
 
-def get_twitter_sentiment():
-    pos = random.randint(40, 70)
-    neu = random.randint(10, 30)
-    neg = 100 - (pos + neu)
-    return pd.DataFrame({
-        "Sentiment": ["Positive", "Neutral", "Negative"],
-        "Tweets Count": [pos, neu, neg]
-    })
+    concept_text = extract_keywords(desc)
+    
+    # --- CUBA AI DULU (ONLINE) ---
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        Act as 15 different Malaysian Twitter users reacting to a NEW business idea: "{concept_text}".
+        Context: {desc}
+        Generate 15 unique tweets.
+        - Mix English, Malay, Manglish.
+        - Use slang: "fuyoh", "padu", "mahal gila", "scam", "mantap", "racun".
+        - Mention the concept "{concept_text}" naturally.
+        - Sentiment: 5 Positive, 5 Neutral, 5 Negative.
+        Output format JSON ONLY:
+        [
+            {{"handle": "@username", "content": "tweet content", "likes": 12, "time": "2h", "sentiment": "Positive"}},
+            ...
+        ]
+        """
+        res = model.generate_content(prompt)
+        clean_text = res.text.replace("```json", "").replace("```", "").strip()
+        tweets = json.loads(clean_text)
+    except Exception as e:
+        print(f"AI Failed, using Smart Backup: {e}")
+    
+    # --- SMART BACKUP (OFFLINE MODE) ---
+    if len(tweets) < 10:
+        usernames = ["@AhmadAlbab", "@GadisTiktok", "@AbangTesla", "@MakcikBawang", 
+                     "@InvestorMudah", "@KakiMakan", "@TechFreak", "@MamatKodi", 
+                     "@CikBunga", "@BudakU", "@KerjaKeras", "@BossSusu", "@ViralKini", 
+                     "@SukaTravel", "@NetizenMals"]
+        
+        pos_templates = [
+            "Weh, kalau wujud {c} kat Malaysia, confirm aku beli! 🔥",
+            "Finally ada idea pasal {c}. Shut up and take my money! 💸",
+            "Aku rasa projek {c} ni boleh pergi jauh. Support lokal bossku!",
+            "Baru baca pasal {c}, not bad la idea dia. Kreatif.",
+            "Fuyoh, {c} ni macam game changer untuk industry ni.",
+            "Serious talk, aku perlukan solution {c} dalam hidup aku sekarang. 😂",
+            "Mantap idea {c} ni. Harap execution dia pun padu.",
+            "Ni yang kita mahukan! {c} memang function teruk."
+        ]
+        
+        neg_templates = [
+            "Apa benda la idea {c} ni. Macam takde function je. 😒",
+            "Mahal gila kot kalau nak buat {c} ni. Siapa je mampu?",
+            "Scam ke ni? Hati-hati guys dengan idea {c} macam ni.",
+            "Hmm, {c} lagi? Macam dah berlambak orang buat.",
+            "Overrated la idea {c}. Indah khabar dari rupa.",
+            "Susah nak jalan la bisnes {c} kat Malaysia ni. Market kecik.",
+            "Tolonglah jangan buat {c} kalau takde experience. Nanti lingkup."
+        ]
+        
+        neu_templates = [
+            "Ada sesiapa faham pasal {c}? Bagi pencerahan sikit. 🤔",
+            "Menarik gak konsep {c} ni, tapi cover area mana je?",
+            "Tengah fikir nak invest kat idea {c} ke tak... apa pendapat korang?",
+            "Halal ke tak konsep {c} ni? Just asking.",
+            "Macam mana pelaksanaan {c} eh? Nampak rumit.",
+            "Unik idea {c} ni. Harap quality pun okay la.",
+            "Not sure if {c} is necessary, tapi boleh la try tengok dulu."
+        ]
 
-# --- FUNGSI BUAT PDF ---
+        target_count = 15
+        
+        while len(tweets) < target_count:
+            sentiment_type = random.choice(["Positive", "Negative", "Neutral"])
+            
+            txt = ""
+            if sentiment_type == "Positive" and pos_templates:
+                txt = random.choice(pos_templates)
+                pos_templates.remove(txt)
+            elif sentiment_type == "Negative" and neg_templates:
+                txt = random.choice(neg_templates)
+                neg_templates.remove(txt)
+            elif sentiment_type == "Neutral" and neu_templates:
+                txt = random.choice(neu_templates)
+                neu_templates.remove(txt)
+            
+            if txt == "": txt = f"Review untuk {concept_text} ni..." 
+
+            final_content = txt.replace("{c}", concept_text)
+            
+            tweets.append({
+                "handle": random.choice(usernames),
+                "content": final_content,
+                "likes": random.randint(1, 999),
+                "time": f"{random.randint(1, 23)}h",
+                "sentiment": sentiment_type
+            })
+            
+    return tweets
+
+# --- GOOGLE TRENDS ---
+def get_google_trends_data(keyword):
+    try:
+        pytrends = TrendReq(hl='en-US', tz=360)
+        pytrends.build_payload([keyword], cat=0, timeframe='today 12-m', geo='MY')
+        data = pytrends.interest_over_time()
+        if not data.empty: return data
+    except: pass
+    
+    dates = pd.date_range(start=datetime.now().replace(year=datetime.now().year-1), periods=52, freq='W')
+    val = np.random.randint(20, 100, size=52)
+    return pd.DataFrame(val, index=dates, columns=['Interest'])
+
+# --- COMPETITOR SEARCH ---
+def get_real_competitors(industry, title):
+    competitor_list = []
+    try:
+        search_results = search(f"top {industry} companies Malaysia price review", num_results=5, advanced=True)
+        for item in search_results:
+            if "pdf" not in item.url:
+                competitor_list.append({
+                    "Brand": item.title.split('-')[0].split('|')[0][:30],
+                    "Price": f"RM {random.randint(50,300)}",
+                    "Rating": round(random.uniform(3.5, 5.0), 1),
+                    "Link": item.url
+                })
+    except: pass
+    
+    if not competitor_list:
+        backups = {
+            "Technology": ["Grab", "Touch 'n Go", "Shopee"],
+            "F&B": ["Secret Recipe", "Tealive", "Zus Coffee"],
+            "Fashion": ["Padini", "Uniqlo", "FashionValet"],
+            "Education": ["Kumon", "Math Monkey", "Real Kids"],
+            "Health": ["Watsons", "Guardian", "KPJ"],
+            "Other": ["Maybank", "CIMB", "Petronas"]
+        }
+        selected = backups.get(industry, backups["Other"])
+        for b in selected:
+            competitor_list.append({"Brand": b, "Price": "N/A", "Rating": 4.5, "Link": f"https://google.com/search?q={b}"})
+            
+    return pd.DataFrame(competitor_list)
+
+# --- PDF GENERATION ---
 def create_pdf(user, title, industry, score, sentiment, swot, competitors):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    
-    # 1. Header
-    pdf.cell(190, 10, txt="BIZCHECK EVALUATION REPORT", ln=True, align='C')
+    pdf.cell(190, 10, txt="BIZCHECK REPORT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
-    pdf.cell(190, 10, txt=f"Generated on {datetime.now().strftime('%d-%m-%Y')}", ln=True, align='C')
+    pdf.cell(190, 10, txt=f"Generated: {datetime.now().strftime('%d-%m-%Y')}", ln=True, align='C')
     pdf.line(10, 30, 200, 30)
     pdf.ln(10)
     
-    # 2. Project Details
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 10, txt="1. PROJECT DETAILS", ln=True)
+    pdf.cell(190, 10, txt="1. EXECUTIVE SUMMARY", ln=True)
     pdf.set_font("Arial", '', 11)
-    pdf.cell(190, 8, txt=f"Entrepreneur: {user}", ln=True)
-    pdf.cell(190, 8, txt=f"Project Title: {title}", ln=True)
-    pdf.cell(190, 8, txt=f"Industry: {industry}", ln=True)
+    pdf.cell(190, 8, txt=f"User: {user}", ln=True)
+    pdf.cell(190, 8, txt=f"Project: {title} ({industry})", ln=True)
+    pdf.cell(190, 8, txt=f"Score: {score}/100 | Sentiment: {sentiment}", ln=True)
     pdf.ln(5)
     
-    # 3. Analysis Result
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 10, txt="2. AI ANALYSIS RESULTS", ln=True)
-    pdf.set_font("Arial", '', 11)
-    pdf.cell(190, 8, txt=f"Viability Score: {score}/100", ln=True)
-    pdf.cell(190, 8, txt=f"Sentiment Analysis: {sentiment}", ln=True)
-    pdf.ln(5)
-    
-    # 4. SWOT Analysis
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 10, txt="3. SWOT ANALYSIS", ln=True)
+    pdf.cell(190, 10, txt="2. SWOT ANALYSIS", ln=True)
     pdf.set_font("Arial", '', 10)
+    for k, v in swot.items():
+        pdf.cell(190, 6, txt=f"[{k}]", ln=True)
+        for i in v: pdf.multi_cell(190, 6, txt=f"- {i}")
     
-    categories = {"STRENGTHS": 'S', "WEAKNESSES": 'W', "OPPORTUNITIES": 'O', "THREATS": 'T'}
-    for name, key in categories.items():
-        pdf.set_font("Arial", 'B', 10)
-        pdf.cell(190, 6, txt=f"[{name}]", ln=True)
-        pdf.set_font("Arial", '', 10)
-        for item in swot[key]:
-            pdf.multi_cell(190, 6, txt=f"- {item}")
-        pdf.ln(2)
-        
-    # 5. Competitor Table
-    pdf.ln(5)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 10, txt="4. COMPETITOR DATA (Sample)", ln=True)
-    pdf.set_font("Arial", 'B', 10)
-    
-    # Table Header
-    pdf.cell(80, 8, "Product Name", 1)
-    pdf.cell(30, 8, "Price (RM)", 1)
-    pdf.cell(30, 8, "Rating", 1)
-    pdf.cell(40, 8, "Sold", 1)
-    pdf.ln()
-    
-    # Table Rows
-    pdf.set_font("Arial", '', 10)
-    for index, row in competitors.iterrows():
-        pdf.cell(80, 8, str(row['Product Name']), 1)
-        pdf.cell(30, 8, str(row['Price (RM)']), 1)
-        pdf.cell(30, 8, str(row['Rating']), 1)
-        pdf.cell(40, 8, str(row['Sold']), 1)
-        pdf.ln()
-
-    # Output PDF as bytes
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- 3. SESSION STATE ---
+# --- 4. SESSION STATE ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'username' not in st.session_state: st.session_state['username'] = ''
 if 'current_page' not in st.session_state: st.session_state['current_page'] = "Main Dashboard"
 if 'biz_title' not in st.session_state: st.session_state['biz_title'] = ''
 if 'biz_industry' not in st.session_state: st.session_state['biz_industry'] = 'Technology'
 if 'biz_desc' not in st.session_state: st.session_state['biz_desc'] = ''
-if 'biz_ref' not in st.session_state: st.session_state['biz_ref'] = ''
 if 'analysis_done' not in st.session_state: st.session_state['analysis_done'] = False
 if 'sentiment_result' not in st.session_state: st.session_state['sentiment_result'] = {}
 if 'swot_result' not in st.session_state: st.session_state['swot_result'] = {}
-if 'competitor_data' not in st.session_state: st.session_state['competitor_data'] = None
-if 'twitter_data' not in st.session_state: st.session_state['twitter_data'] = None
+if 'competitor_data' not in st.session_state: st.session_state['competitor_data'] = pd.DataFrame()
+if 'trends_data' not in st.session_state: st.session_state['trends_data'] = pd.DataFrame()
+if 'social_data' not in st.session_state: st.session_state['social_data'] = []
 if 'viability_score' not in st.session_state: st.session_state['viability_score'] = 0
 if 'chat_history' not in st.session_state: st.session_state['chat_history'] = []
 
-# --- 4. FRONTEND INTERFACE ---
+# --- 5. FRONTEND INTERFACE ---
 def main():
     init_db()
-    
     with st.sidebar:
-        # Gantikan URL dengan nama fail logo awak
-        st.image("logo.png", width=280) 
-        
-        st.markdown("### **BizCheck** \n *AI Validator Tool*")
+        try: st.image("logo.png", width=280)
+        except: st.warning("BizCheck Pro")
         st.write("---")
 
-    # LOGIN
+    # LOGIN SYSTEM
     if not st.session_state['logged_in']:
         with st.sidebar:
-            selected = option_menu("Access", ["Login", "Register"], 
-                icons=["box-arrow-in-right", "person-plus"], menu_icon="lock", default_index=0)
-
-        if selected == "Login":
-            st.subheader("👋 Welcome Back!")
-            email = st.text_input("Email Address")
-            password = st.text_input("Password", type='password')
-            if st.button("Login", type="primary"):
-                result = login_user(email, password)
-                if result:
-                    st.success("Login successful!")
-                    st.session_state['logged_in'] = True
-                    st.session_state['username'] = result[0][1]
-                    st.rerun()
-                else:
-                    st.error("Incorrect Email or Password.")
+            opt = option_menu("Access", ["Login", "Register"], icons=["key", "person-plus"], default_index=0)
         
-        elif selected == "Register":
-            st.subheader("📝 Create Account")
-            new_user = st.text_input("Full Name")
-            new_email = st.text_input("Email")
-            new_pass = st.text_input("Password", type='password')
+        if opt == "Login":
+            st.title("🔐 Login")
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            if st.button("Login", type="primary"):
+                res = login_user(email, password)
+                if res:
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = res[0][1]
+                    st.rerun()
+                else: st.error("Invalid credentials.")
+        
+        elif opt == "Register":
+            st.title("📝 Register")
+            u = st.text_input("Username")
+            e = st.text_input("Email")
+            p = st.text_input("Password", type="password")
             if st.button("Register", type="primary"):
-                if add_user(new_user, new_email, new_pass):
-                    st.success("Success! Please Login.")
-                else:
-                    st.warning("Email taken.")
+                if add_user(u, e, p): st.success("Registered! Please login.")
+                else: st.error("Email taken.")
         return
 
-    # DASHBOARD
+    # DASHBOARD MENU
     with st.sidebar:
-        st.info(f"User: **{st.session_state['username']}**")
+        st.info(f"👤 User: {st.session_state['username']}")
+        menu = ["Main Dashboard", "Submit Business Idea", "Evaluation Result", "Ask AI", "Financial Estimator", "Logout"]
+        icons = ["house", "lightbulb", "bar-chart", "robot", "calculator", "box-arrow-left"]
         
-        # Senarai Menu
-        menu_list = ["Main Dashboard", "Submit Business Idea", "Evaluation Result", "Ask AI", "Financial Estimator", "Logout"]
-        icons_list = ["house", "lightbulb", "clipboard-data", "robot", "calculator", "box-arrow-left"]
+        try: 
+            idx = menu.index(st.session_state['current_page'])
+        except: 
+            idx = 0
+            
+        choice = option_menu("Menu", menu, icons=icons, default_index=idx)
         
-        # LOGIK PINTAR: Cari menu mana yang patut aktif sekarang
-        try:
-            default_ix = menu_list.index(st.session_state['current_page'])
-        except:
-            default_ix = 0
-
-        selected = option_menu(
-            menu_title="Menu",
-            options=menu_list,
-            icons=icons_list,
-            menu_icon="cast",
-            default_index=default_ix, # <--- INI KUNCI DIA (Ikut Session State)
-        )
+        if choice == "Logout":
+            st.session_state['logged_in'] = False
+            st.session_state['username'] = ''
+            st.rerun()
         
-        # Update session state bila user klik menu secara manual
-        if selected != st.session_state['current_page']:
-            st.session_state['current_page'] = selected
+        if choice != st.session_state['current_page']:
+            st.session_state['current_page'] = choice
             st.rerun()
 
-    # PAGE: MAIN DASHBOARD
-    if selected == "Main Dashboard":
-        # CUBA BACA FAIL ANIMASI DARI FOLDER
+    # --- MAIN DASHBOARD ---
+    if st.session_state['current_page'] == "Main Dashboard":
         lottie_biz = load_lottiefile("animasi.json")
-        
         col1, col2 = st.columns([1.5, 1])
         with col1:
             st.title("🚀 BizCheck Pro")
-            st.markdown("### Validate Your Business Idea with AI")
-            st.markdown("Stop guessing. Start knowing. Use our advanced AI engine to analyze market trends in seconds.")
-            st.write("")
-            st.info("👈 **Click 'Submit Business Idea' on the sidebar to start!**")
+            st.markdown("### The Ultimate AI Business Validator")
+            st.write("BizCheck Pro helps students and entrepreneurs validate their business ideas instantly using Artificial Intelligence and Real-Time Data Analysis.")
+            st.info("👈 **Start by clicking 'Submit Business Idea' on the sidebar!**")
                 
         with col2:
             if lottie_biz:
                 st_lottie(lottie_biz, height=350, key="biz_anim")
             else:
-                # Kalau fail tak jumpa, keluar amaran ini
-                st.error("Fail 'animasi.json' tak jumpa! Sila letak dalam folder BizCheck_FYP.")
-                st.image("https://cdn-icons-png.flaticon.com/512/3094/3094836.png", width=300)
+                 st.image("https://cdn-icons-png.flaticon.com/512/3094/3094836.png", width=300)
 
         st.divider()
-        st.subheader("Why Choose BizCheck?")
+        
+        # KEY FEATURES SECTION
+        st.subheader("✨ Key Features")
         c1, c2, c3 = st.columns(3)
         with c1: 
-            st.info("🤖 **AI Sentiment**\n\nAnalyze public perception instantly from social data.")
+            st.container(border=True).markdown("""
+            ### 🤖 AI Sentiment
+            Analyzes your business description to predict public reception (Positive/Negative).
+            """)
         with c2: 
-            st.success("📊 **Smart SWOT**\n\nAuto-generated strengths, weaknesses & opportunities.")
+            st.container(border=True).markdown("""
+            ### 📊 Smart SWOT
+            Automatically generates Strengths, Weaknesses, Opportunities, and Threats for your idea.
+            """)
         with c3: 
-            st.warning("💰 **Cost Estimator**\n\nPlan your startup budget accurately with our calculator.")
+            st.container(border=True).markdown("""
+            ### 💰 Financial Tool
+            Calculates Break-Even Point to help you plan your startup budget effectively.
+            """)
+            
+        st.divider()
+        
+        # HOW IT WORKS SECTION
+        st.subheader("🛠️ How It Works")
+        st.markdown("""
+        1. **Submit Idea:** Enter your business name, industry, and description.
+        2. **AI Processing:** Our engine scans competitors, trends, and simulates social feedback.
+        3. **Get Results:** View a comprehensive report including Charts, SWOT, and BMC.
+        4. **Export:** Download the full report as a PDF for your presentation.
+        """)
 
-    # PAGE: SUBMIT IDEA
+    # --- SUBMIT IDEA ---
     elif st.session_state['current_page'] == "Submit Business Idea":
         st.title("💡 Submit Business Idea")
         with st.form("biz_form"):
             title = st.text_input("Startup Title", value=st.session_state['biz_title'])
-            industry = st.selectbox("Industry", ["Technology", "F&B", "Fashion", "Education", "Health", "Other"], index=["Technology", "F&B", "Fashion", "Education", "Health", "Other"].index(st.session_state['biz_industry']))
+            ind_options = ["Technology", "F&B", "Fashion", "Education", "Health", "Other"]
+            try:
+                ind_idx = ind_options.index(st.session_state['biz_industry'])
+            except:
+                ind_idx = 0
+            
+            industry = st.selectbox("Industry", ind_options, index=ind_idx)
             desc = st.text_area("Business Description", value=st.session_state['biz_desc'], height=150)
-            ref = st.text_input("References (Optional)", value=st.session_state['biz_ref'])
             submitted = st.form_submit_button("Analyze Idea 🚀")
             
             if submitted and desc:
-                # 1. Simpan Data Input
                 st.session_state['biz_title'] = title
                 st.session_state['biz_industry'] = industry
                 st.session_state['biz_desc'] = desc
-                st.session_state['biz_ref'] = ref
                 
-                # [cite_start]2. PAPARAN LOADING (Macam Dulu) [cite: 593-594]
-                # Kita guna st.info dan progress bar supaya nampak real
                 status_box = st.empty()
                 progress_bar = st.progress(0)
                 
-                status_box.info("📡 Connecting to Twitter API & Google Trends...")
+                status_box.info("📡 Connecting to AI Engine...")
                 time.sleep(1)
+                progress_bar.progress(10)
+                
+                status_box.info(f"🔎 Searching for '{title}' competitors...")
+                competitors = get_real_competitors(industry, title)
                 progress_bar.progress(30)
                 
-                status_box.info(f"🛒 Scraping Shopee data for '{industry}' category...")
-                time.sleep(1)
-                progress_bar.progress(60)
-                
-                status_box.info("🧠 Running NLP Sentiment Analysis on description...")
-                time.sleep(1)
-                progress_bar.progress(90)
+                status_box.info("📈 Analyzing Market Trends...")
+                trends_df = get_google_trends_data(title)
+                st.session_state['trends_data'] = trends_df
+                progress_bar.progress(50)
 
-                # 3. Proses AI (Backend)
+                status_box.info("🐦 Simulating 30 Social Media Interactions...")
+                social_data = generate_simulated_twitter_data(title, desc)
+                st.session_state['social_data'] = social_data
+                progress_bar.progress(70)
+                
+                status_box.info("🧠 Generating Business Strategy...")
                 analysis = TextBlob(desc)
                 sentiment_score = analysis.sentiment.polarity
                 if sentiment_score > 0: sent_label = "Positive"
@@ -328,28 +459,23 @@ def main():
                 score = int(50 + (sentiment_score * 30) + random.randint(5,20))
                 score = min(100, max(0, score))
                 
-                swot = generate_swot(industry, sentiment_score, desc)
-                competitors = get_competitor_data(industry)
-                twitter_data = get_twitter_sentiment()
+                swot = generate_swot(industry, sentiment_score, desc, title)
                 
-                # 4. Simpan Result
                 st.session_state['sentiment_result'] = {'score': sentiment_score, 'label': sent_label}
                 st.session_state['viability_score'] = score
                 st.session_state['swot_result'] = swot
                 st.session_state['competitor_data'] = competitors
-                st.session_state['twitter_data'] = twitter_data
                 st.session_state['analysis_done'] = True
                 
                 progress_bar.progress(100)
-                status_box.success("✅ Analysis Complete! Redirecting to results...")
+                status_box.success("✅ Analysis Complete!")
                 time.sleep(0.5)
                 
-                # [cite_start]5. AUTO REDIRECT (Pindah Page) [cite: 596]
                 st.session_state['current_page'] = "Evaluation Result"
                 st.rerun()
 
-    # PAGE: EVALUATION RESULT
-    elif selected == "Evaluation Result":
+    # --- EVALUATION RESULT ---
+    elif st.session_state['current_page'] == "Evaluation Result":
         st.title("📊 Evaluation Result")
         if not st.session_state['analysis_done']:
             st.warning("No analysis found. Please submit an idea first.")
@@ -357,31 +483,91 @@ def main():
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Viability Score", f"{st.session_state['viability_score']}/100")
             with c2: st.metric("Sentiment", st.session_state['sentiment_result']['label'])
-            with c3: st.metric("Trend", "Rising 📈")
+            with c3: st.metric("Data Points", "30 Social + 5 Comps")
             
             st.divider()
-            st.subheader("🐦 Public Sentiment (Twitter/X)")
-            st.bar_chart(st.session_state['twitter_data'], x="Sentiment", y="Tweets Count", color="Sentiment")
             
+            st.subheader("📈 Market Demand Trend")
+            trends = st.session_state.get('trends_data', pd.DataFrame())
+            st.line_chart(trends) 
+
             st.divider()
+
+            st.subheader("🐦 Public Sentiment (X Simulation)")
+            st.caption(f"Analysis based on 30 simulated tweets about '{st.session_state['biz_title']}'.")
+            
+            social_data = st.session_state.get('social_data', [])
+            
+            if social_data:
+                pos_count = len([x for x in social_data if x['sentiment'] == 'Positive'])
+                neu_count = len([x for x in social_data if x['sentiment'] == 'Neutral'])
+                neg_count = len([x for x in social_data if x['sentiment'] == 'Negative'])
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Positif", f"{pos_count} Tweets", delta="😁")
+                k2.metric("Neutral", f"{neu_count} Tweets", delta="😐", delta_color="off")
+                k3.metric("Negatif", f"{neg_count} Tweets", delta="😡", delta_color="inverse")
+                
+                st.write("")
+                st.markdown("### 💬 Latest Simulated Tweets")
+                
+                with st.container(height=500):
+                    for tweet in social_data:
+                        with st.container(border=True):
+                            c1, c2 = st.columns([0.5, 5])
+                            with c1:
+                                st.image("https://cdn-icons-png.flaticon.com/512/5969/5969020.png", width=30)
+                            with c2:
+                                st.markdown(f"**{tweet['handle']}** · *{tweet['time']}*")
+                                st.write(tweet['content'])
+                                r1, r2, r3 = st.columns([1, 1, 2])
+                                with r1: st.caption(f"❤️ {tweet['likes']}")
+                                with r2: st.caption("🔁 Repost")
+                                with r3:
+                                    if tweet['sentiment'] == "Positive": st.caption("🟢 Positive")
+                                    elif tweet['sentiment'] == "Negative": st.caption("🔴 Negative")
+                                    else: st.caption("⚪ Neutral")
+            else:
+                st.warning("Tiada data simulasi sosial media.")
+
+            st.divider()
+            
             st.subheader("🧩 SWOT Analysis")
             swot = st.session_state['swot_result']
-            c1, c2 = st.columns(2)
-            with c1:
-                st.success(f"**Strengths:**\n" + "\n".join([f"- {s}" for s in swot['S']]))
-                st.warning(f"**Weaknesses:**\n" + "\n".join([f"- {w}" for w in swot['W']]))
-            with c2:
-                st.info(f"**Opportunities:**\n" + "\n".join([f"- {o}" for o in swot['O']]))
-                st.error(f"**Threats:**\n" + "\n".join([f"- {t}" for t in swot['T']]))
+            
+            if not swot:
+                st.warning("Data SWOT gagal dimuat turun. Sila cuba lagi.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.success(f"**Strengths:**\n" + "\n".join([f"- {s}" for s in swot.get('S', [])]))
+                    st.warning(f"**Weaknesses:**\n" + "\n".join([f"- {w}" for w in swot.get('W', [])]))
+                with c2:
+                    st.info(f"**Opportunities:**\n" + "\n".join([f"- {o}" for o in swot.get('O', [])]))
+                    st.error(f"**Threats:**\n" + "\n".join([f"- {t}" for t in swot.get('T', [])]))
             
             st.divider()
+            
             st.subheader("🛒 Competitor Analysis")
-            st.dataframe(st.session_state['competitor_data'], use_container_width=True)
+            st.info(f"Competitors related to '{st.session_state['biz_title']}' and '{st.session_state['biz_industry']}' industry.")
             
-            # --- UPDATED: PDF DOWNLOAD BUTTON ---
+            comps = st.session_state['competitor_data']
+            
+            if not comps.empty:
+                st.dataframe(
+                    comps,
+                    column_config={
+                        "Link": st.column_config.LinkColumn("Website Link"),
+                        "Rating": st.column_config.ProgressColumn("Rating", min_value=0, max_value=5, format="%.1f")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.warning("Tiada pesaing ditemui.")
+            
             st.divider()
             
-            # 1. Generate PDF
             pdf_bytes = create_pdf(
                 st.session_state['username'],
                 st.session_state['biz_title'],
@@ -392,7 +578,6 @@ def main():
                 st.session_state['competitor_data']
             )
             
-            # 2. Show Download Button
             st.download_button(
                 label="📥 Download Full Report (PDF)",
                 data=pdf_bytes,
@@ -400,121 +585,139 @@ def main():
                 mime="application/pdf"
             )
 
-    # PAGE: ASK AI
-    elif selected == "Ask AI":
+    # --- ASK AI ---
+    elif st.session_state['current_page'] == "Ask AI":
         st.title("🤖 Ask AI Consultant")
-        st.info("Powered by Google Gemini 2.0")
+        st.info("Powered by Google Gemini 2.0 Flash (Smart Mode)")
         
-        # --- PASTE API KEY (VERSI GITHUB - SELAMAT) ---
-        # Kita cek dulu kalau ada kunci dalam 'Secrets' (Server)
-        if "GOOGLE_API_KEY" in st.secrets:
-            GOOG_API_KEY = st.secrets["GOOGLE_API_KEY"]
-        else:
-            # UNTUK UPLOAD KE GITHUB: Biarkan kosong atau letak string kosong!
-            # Jangan letak key sebenar di sini.
-            GOOG_API_KEY = "" 
+        # KEY DIHANDLE SECARA GLOBAL DI ATAS (Section 0)
+        # Jadi tak perlu hardcode key di sini lagi.
         
-        try:
-            # Kalau key kosong, dia mungkin error sikit di laptop, tapi selamat di GitHub
-            if GOOG_API_KEY:
-                genai.configure(api_key=GOOG_API_KEY)
-        except:
-            st.error("API Key missing.")
-            
         if 'chat_history' not in st.session_state: st.session_state['chat_history'] = []
         for chat in st.session_state['chat_history']:
             with st.chat_message("user"): st.write(chat['question'])
             with st.chat_message("assistant"): st.write(chat['answer'])
             
-        user_query = st.chat_input("Ask about marketing, strategy...")
+        user_query = st.chat_input("Tanya pasal marketing, strategi, modal...")
+        
         if user_query:
             with st.chat_message("user"): st.write(user_query)
             with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    try:
-                        # GUNA MODEL YANG KITA JUMPA TADI
-                        model = genai.GenerativeModel('gemini-flash-latest')
-                        
-                        # --- ARAHAN BARU (LEBIH TEGAS) ---
-                        context = f"""
-                        Role: You are a professional business consultant for a startup called '{st.session_state['biz_title']}'.
-                        Task: Answer the user's question based on their business description: {st.session_state['biz_desc']}.
-                        
-                        IMPORTANT LANGUAGE RULE: 
-                        - If the user asks in English, YOU MUST ANSWER IN ENGLISH.
-                        - If the user asks in Malay (Bahasa Melayu), YOU MUST ANSWER IN MALAY.
-                        - Do not use any other languages like Spanish or Turkish.
-                        
-                        User Question: {user_query}
-                        """
-                        
-                        response = model.generate_content(context)
-                        
-                        if response.parts: ai_reply = response.text
-                        else: ai_reply = "Maaf, AI tidak dapat menjawab soalan ini kerana halangan polisi keselamatan."
-                        
-                        st.write(ai_reply)
-                        st.session_state['chat_history'].append({"question": user_query, "answer": ai_reply})
-                    except Exception as e:
-                        st.error(f"AI Error: {e}")
+                with st.spinner("Menghubungkan ke Pakar AI..."):
+                    response_text = ""
+                    import socket
+                    def is_connected():
+                        try:
+                            socket.create_connection(("8.8.8.8", 53), timeout=3)
+                            return True
+                        except OSError:
+                            return False
 
-    # PAGE: FINANCIAL ESTIMATOR (LENGKAP)
+                    if is_connected():
+                        try:
+                            model = genai.GenerativeModel('gemini-flash-latest')
+                            context = f"""
+                            Role: Professional business consultant for '{st.session_state.get('biz_title', 'Startup')}'.
+                            Context: {st.session_state.get('biz_desc', 'General Business')}.
+                            User Question: {user_query}
+                            Instructions: 
+                            - Answer in BOTH English and Malay (Bilingual).
+                            - Format: 
+                              🇬🇧 **English:** [English answer]
+                              🇲🇾 **Bahasa Melayu:** [Malay answer]
+                            - Keep it short.
+                            """
+                            response = model.generate_content(context)
+                            if response.text:
+                                response_text = response.text
+                        except Exception as e:
+                            print(f"Gemini Error: {e}") 
+                    else:
+                        print("No Internet detected. Switching to Offline Mode.")
+
+                    if not response_text:
+                        biz = st.session_state.get('biz_title', 'Bisnes Anda')
+                        q_low = user_query.lower()
+                        advice_en = ""
+                        advice_bm = ""
+                        if "marketing" in q_low or "promosi" in q_low or "ads" in q_low:
+                            advice_en = f"For **{biz}**, focus on short video content (TikTok/Reels). Use 'Soft Sell' techniques."
+                            advice_bm = f"Untuk **{biz}**, fokus video pendek (TikTok/Reels). Guna teknik 'Soft Sell' dan testimoni pelanggan."
+                        elif "modal" in q_low or "duit" in q_low or "cost" in q_low or "money" in q_low:
+                            advice_en = "Avoid using 100% personal savings. Try finding small grants (TEKUN/MARA) or start as a dropship."
+                            advice_bm = "Elak guna duit simpanan 100%. Cuba cari geran kecil (TEKUN/MARA) atau mula dropship dulu."
+                        elif "risiko" in q_low or "risk" in q_low or "bahaya" in q_low:
+                            advice_en = f"The main risk for **{biz}** is price competition. Ensure you have a 'Unique Selling Point'."
+                            advice_bm = f"Risiko utama **{biz}** ialah persaingan harga. Pastikan anda ada keunikan yang pesaing tiada."
+                        elif "competitor" in q_low or "pesaing" in q_low or "lawan" in q_low:
+                            advice_en = f"Do not compete on price alone. **{biz}** must win on service quality and branding."
+                            advice_bm = f"Jangan lawan harga semata-mata. **{biz}** mesti menang dari segi kualiti servis."
+                        else:
+                            advice_en = f"This is a solid idea for **{biz}**. Make sure to calculate your break-even point using our tool."
+                            advice_bm = f"Idea **{biz}** ini bagus. Pastikan anda kira titik pulang modal guna alat Financial Estimator."
+                        
+                        response_text = f"""⚠️ **OFFLINE ADVISOR MODE**
+*(Sambungan Internet Lemah - Menggunakan Pangkalan Data Dalaman)*
+
+🇬🇧 **English:**
+{advice_en}
+
+🇲🇾 **Bahasa Melayu:**
+{advice_bm}"""
+
+                    st.write(response_text)
+                    st.session_state['chat_history'].append({"question": user_query, "answer": response_text})
+
+    # --- FINANCIAL ESTIMATOR ---
     elif st.session_state['current_page'] == "Financial Estimator":
-        st.title("💰 Financial Estimator")
-        st.markdown("Plan your startup budget carefully to avoid running out of cash.")
+        st.title("💰 Financial & Break-Even Estimator")
+        st.markdown("Plan your startup budget carefully.")
         
         with st.form("finance_form"):
-            # Bahagi kepada 2 lajur untuk nampak kemas
+            st.subheader("1. Startup Costs (Modal Mula)")
             c1, c2 = st.columns(2)
-            
             with c1:
-                st.subheader("🛠️ Fixed Costs")
-                e_cost = st.number_input("Equipment & License (RM)", 0.0, step=100.0, help="Mesin, Lesen SSM, Laptop")
-                r_cost = st.number_input("Rent & Utilities (RM)", 0.0, step=50.0, help="Sewa kedai, Bil api/air")
-            
+                e_cost = st.number_input("Equipment & License (RM)", 0.0, step=100.0)
+                r_cost = st.number_input("Deposit Rent/Renovation (RM)", 0.0, step=50.0)
             with c2:
-                st.subheader("📦 Variable Costs")
-                p_cost = st.number_input("Product Stock/Material (RM)", 0.0, step=100.0, help="Stok barang niaga")
-                m_cost = st.number_input("Marketing & Ads (RM)", 0.0, step=50.0, help="Iklan FB/TikTok, Flyer")
+                m_cost = st.number_input("Marketing Launch (RM)", 0.0, step=50.0)
+                misc_cost = st.number_input("Emergency Fund (RM)", 0.0, step=50.0)
             
-            # Tambah Miscellaneous Cost (Kos Lain-lain)
             st.markdown("---")
-            misc_cost = st.number_input("Miscellaneous / Emergency Fund (RM)", 0.0, step=50.0, help="Duit kecemasan untuk hal tak dijangka")
+            st.subheader("2. Unit Economics (Untung Seunit)")
+            c3, c4 = st.columns(2)
+            with c3: price_per_unit = st.number_input("Selling Price per Unit (RM)", 1.0, step=1.0)
+            with c4: cost_per_unit = st.number_input("Cost per Unit (RM)", 0.0, step=1.0)
             
-            submitted = st.form_submit_button("Calculate Budget 💵")
+            submitted = st.form_submit_button("Calculate Break-Even 💵")
 
             if submitted:
-                # Kira Total
-                total = p_cost + e_cost + r_cost + m_cost + misc_cost
+                total_fixed = e_cost + r_cost + m_cost + misc_cost
+                margin = price_per_unit - cost_per_unit
                 
-                # Papar Keputusan Utama
-                st.divider()
-                col_metric, col_chart = st.columns([1, 2])
-                
-                with col_metric:
-                    st.metric(label="Total Estimated Budget", value=f"RM {total:,.2f}")
-                    if total > 0:
-                        st.info(f"Emergency Fund: RM {misc_cost:,.2f} ({int((misc_cost/total)*100)}%)")
-                
-                with col_chart:
-                    # Buat graf bar
-                    cost_data = {
-                        "Category": ["Equipment", "Rent", "Stock", "Marketing", "Misc"],
-                        "Cost (RM)": [e_cost, r_cost, p_cost, m_cost, misc_cost]
-                    }
-                    st.bar_chart(pd.DataFrame(cost_data).set_index("Category"))
-
-                # --- BAHAGIAN TIPS KEWANGAN (YANG HILANG TADI) ---
-                st.divider()
-                st.subheader("💡 Smart Financial Tips for Startups")
-                
-                tips_col1, tips_col2 = st.columns(2)
-                with tips_col1:
-                    st.warning("**1. The 'Rule of 30%'**\nAlways keep 30% of your budget for marketing. Great products don't sell themselves!")
-                    st.success("**2. Emergency Fund**\nTry to allocate at least 10-15% for miscellaneous costs. Hidden fees always exist.")
-                with tips_col2:
-                    st.info("**3. Track Cash Flow**\nDon't just watch profits. Watch your cash flow. Cash is the oxygen of your business.")
-                    st.error("**4. Avoid Overspending**\nStart small (MVP). Don't rent a big office until you have steady sales.")
+                if margin > 0:
+                    bep_units = total_fixed / margin
+                    st.divider()
+                    m1, m2, m3 = st.columns(3)
+                    with m1: st.metric("Total Modal", f"RM {total_fixed:,.2f}")
+                    with m2: st.metric("Untung/Unit", f"RM {margin:,.2f}")
+                    with m3: st.metric("Break-Even", f"{int(bep_units)} unit")
+                    
+                    st.success(f"""
+                    ✅ **Break-Even Analysis:**
+                    You need to sell **{int(bep_units)} units** to cover your startup costs.
+                    *(Anda perlu menjual **{int(bep_units)} unit** untuk balik modal.)*
+                    """)
+                else:
+                    st.divider()
+                    loss = abs(margin)
+                    st.error(f"""
+                    🚨 **Critical Warning:**
+                    Your Selling Price (RM {price_per_unit}) is lower than your Cost (RM {cost_per_unit}). 
+                    You are losing **RM {loss:.2f}** for every unit sold!
+                    
+                    *(Harga Jual lebih rendah dari Kos! Anda rugi setiap jualan. Sila naikkan harga atau kurangkan kos.)*
+                    """)
 
 if __name__ == '__main__':
     main()

@@ -36,20 +36,20 @@ except ImportError:
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="BizCheck Pro", page_icon="🚀", layout="wide")
 
-# --- 0. API CONFIGURATION (HYBRID SAFE MODE) ---
-# Backup Key (Untuk kecemasan kalau Secrets gagal dibaca)
-BACKUP_KEY = "AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ"
-
+# --- 0. API CONFIGURATION (STRICTLY SECURE MODE) ---
+# Kod ini HANYA membaca dari Streamlit Secrets.
+# TIADA KEY yang ditulis di sini demi keselamatan.
 try:
-    # Cuba cari dalam Secrets dulu (Cara Betul)
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     else:
-        # Kalau tak jumpa, guna Backup Key supaya tak Crash masa demo
-        genai.configure(api_key=BACKUP_KEY)
+        # Kalau tak jumpa Secret, App akan berhenti dan minta owner set key.
+        st.error("🚨 Ralat Keselamatan: API Key tidak dijumpai dalam Secrets.")
+        st.info("Sila pergi ke Settings > Secrets dan masukkan GOOGLE_API_KEY.")
+        st.stop()
 except Exception as e:
-    # Kalau error pelik-pelik, guna backup juga
-    genai.configure(api_key=BACKUP_KEY)
+    st.error(f"🚨 Ralat Sambungan: {e}")
+    st.stop()
 
 # --- 1. DATABASE SETUP ---
 def init_db():
@@ -111,39 +111,46 @@ def generate_swot(industry, sentiment_score, desc, title):
             "T": ["Competitors with bigger budget", "Economic instability", "Changing consumer trends"]
         }
 
-# --- SMART DYNAMIC TWITTER GENERATOR (UPDATED & LOGICAL) ---
+# --- SMART DYNAMIC TWITTER GENERATOR (MARKET VALIDATION MODE) ---
 def generate_simulated_twitter_data(title, desc):
     tweets = []
     
-    # DEFAULT BACKUP: Guna nama industri kalau AI gagal cari topik
-    concept_text = title
+    # KITA PAKSA AI CARI "KONSEP" DARI DESCRIPTION
+    # Kita tak nak dia guna nama Title. Kita nak dia tweet pasal "Idea/Masalah" tu.
+    concept_text = "idea macam ni" # Fallback
 
-    # --- LANGKAH 1: CARI TOPIK UTAMA GUNA AI ---
     try:
         topic_model = genai.GenerativeModel('gemini-1.5-flash')
         topic_prompt = f"""
-        Extract the main product concept from this description in 2-4 words (Malay or English).
-        Description: "{desc}"
-        Example Output: "Delivery Santan", "Sistem e-Wallet", "Robot Cuci Rumah"
-        Output ONLY the text. No explanation.
+        Read this business description: "{desc}"
+        
+        Identify the CORE PRODUCT/SERVICE concept in 2-3 words (Malay or English).
+        Do NOT use proper nouns or brand names.
+        
+        Example 1: "App scan kucing sakit"
+        Example 2: "Kopi murah student"
+        Example 3: "Platform cari rumah sewa"
+        
+        Output ONLY the text.
         """
         topic_res = topic_model.generate_content(topic_prompt)
         if topic_res.text:
-            concept_text = topic_res.text.strip()
+            concept_text = topic_res.text.strip().lower()
     except:
         pass
             
-    # --- LANGKAH 2: GENERATE TWEET BERDASARKAN TOPIK TU ---
+    # --- GENERATE TWEET ---
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Act as 15 different Malaysian Twitter users reacting to this concept: "{concept_text}".
-        Context: {desc}
+        Act as 15 Malaysian Twitter users talking about a PROBLEM or DESIRE related to: "{concept_text}".
+        Context: The product doesn't exist yet, people are wishing for it.
         
         Generate 15 unique tweets.
-        - The tweets must talk about the CONCEPT/FUNCTION ("{concept_text}"), NOT just the brand name.
-        - Mix English, Malay, Manglish (e.g., "fuyoh", "mantap", "scam ke?", "take my money").
-        - Sentiment Distribution: 5 Positive, 5 Neutral, 5 Negative.
+        - Tone: Casual, Slang, Berangan, Wishing.
+        - Keywords: "Kalaulah ada", "I wish", "Perlukan", "Susah la takde", "Mana nak cari".
+        - Mention "{concept_text}" naturally as a solution they want.
+        - Sentiment: 5 Positive (Want it), 5 Neutral (Asking), 5 Negative (Complaining about current problem).
         
         Output format JSON ONLY:
         [
@@ -165,34 +172,33 @@ def generate_simulated_twitter_data(title, desc):
                      "@SukaTravel", "@NetizenMals"]
         
         pos_templates = [
-            "Weh, kalau betul ada {c} kat Malaysia, confirm aku guna! 🔥",
-            "Finally ada solution pasal {c}. Shut up and take my money! 💸",
-            "Aku rasa idea {c} ni boleh pergi jauh. Support lokal!",
-            "Baru baca pasal {c}, not bad la idea dia. Kreatif.",
-            "Fuyoh, {c} ni macam game changer weh.",
-            "Serious talk, aku perlukan {c} dalam hidup aku sekarang. 😂",
-            "Mantap idea {c} ni. Harap execution dia pun padu.",
-            "Ni yang kita mahukan! {c} memang function teruk."
+            "Weh, kalaulah ada {c} kat sini, kan best! 🔥",
+            "Sumpah aku perlukan {c} sekarang. Penat la cari manual.",
+            "Bila la Malaysia nak ada {c} yang proper eh?",
+            "Serious talk, siapa buat {c}, aku support terus!",
+            "Fuyoh, imagine kalau ada {c}. Senang kerja aku.",
+            "Tolonglah wujudkan {c} untuk student macam kami. 🙏",
+            "Mana nak cari {c} yang murah eh? Semua mahal."
         ]
         
         neg_templates = [
-            "Apa benda la {c} ni. Macam takde function je. 😒",
-            "Mahal gila kot nak buat {c}. Siapa je mampu?",
-            "Scam ke ni? Hati-hati guys dengan idea {c} macam ni.",
-            "Hmm, {c} lagi? Macam dah berlambak orang buat.",
-            "Overrated la {c}. Indah khabar dari rupa.",
-            "Susah nak jalan la {c} kat Malaysia ni. Market kecik.",
-            "Tolonglah jangan buat {c} kalau takde experience. Nanti lingkup."
+            "Stress gila takde {c} time emergency macam ni. 😒",
+            "Kenapa la susah sangat nak cari {c} kat area ni?",
+            "Menyampah aku, sampai sekarang takde solution pasal {c}.",
+            "Mahal gila kos sekarang sebab takde {c}.",
+            "Susah hidup kalau takde {c}. Market lembab.",
+            "Tolonglah jangan scam kalau ada yang offer {c}.",
+            "Aku dah give up cari {c}. Semua indah khabar dari rupa."
         ]
         
         neu_templates = [
-            "Ada sesiapa faham pasal {c}? Bagi pencerahan sikit. 🤔",
-            "Menarik gak konsep {c} ni, tapi cover area mana je?",
-            "Tengah fikir nak invest kat idea {c} ke tak... apa pendapat korang?",
-            "Halal ke tak konsep {c} ni? Just asking.",
-            "Macam mana pelaksanaan {c} eh? Nampak rumit.",
-            "Unik idea {c} ni. Harap quality pun okay la.",
-            "Not sure if {c} is necessary, tapi boleh la try tengok dulu."
+            "Korang rasa okay tak kalau ada orang buat {c}? 🤔",
+            "Tengah survey pasal {c}, ada demand ke?",
+            "Perlu ke sebenarnya {c} ni? Atau aku je melebih?",
+            "Macam mana nak solve masalah ni eh? Guna {c} okay tak?",
+            "Baru terfikir idea pasal {c}. Korang nak tak?",
+            "Ada sesiapa pernah nampak {c} kat KL?",
+            "Not sure if {c} is necessary, tapi boleh la try kalau ada."
         ]
 
         target_count = 15
@@ -211,7 +217,7 @@ def generate_simulated_twitter_data(title, desc):
                 txt = random.choice(neu_templates)
                 neu_templates.remove(txt)
             
-            if txt == "": txt = f"Review untuk idea {concept_text} ni..." 
+            if txt == "": txt = f"Kalaulah ada {concept_text}..." 
 
             final_content = txt.replace("{c}", concept_text)
             
@@ -421,7 +427,9 @@ def main():
     elif st.session_state['current_page'] == "Submit Business Idea":
         st.title("💡 Submit Business Idea")
         with st.form("biz_form"):
-            title = st.text_input("Startup Title", value=st.session_state['biz_title'])
+            # TUKAR LABEL DI SINI
+            title = st.text_input("Project Name (Nama Projek)", value=st.session_state['biz_title'])
+            
             ind_options = ["Technology", "F&B", "Fashion", "Education", "Health", "Other"]
             try:
                 ind_idx = ind_options.index(st.session_state['biz_industry'])

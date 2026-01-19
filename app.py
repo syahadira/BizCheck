@@ -111,25 +111,24 @@ def generate_swot(industry, sentiment_score, desc, title):
             "T": ["Competitors with bigger budget", "Economic instability", "Changing consumer trends"]
         }
 
-# --- SMART DYNAMIC TWITTER GENERATOR (MARKET VALIDATION MODE) ---
+# --- SMART DYNAMIC TWITTER GENERATOR (FIXED: WAJIB SEBUT KONSEP) ---
 def generate_simulated_twitter_data(title, desc):
     tweets = []
     
-    # KITA PAKSA AI CARI "KONSEP" DARI DESCRIPTION
-    # Kita tak nak dia guna nama Title. Kita nak dia tweet pasal "Idea/Masalah" tu.
-    concept_text = "idea macam ni" # Fallback
-
+    # 1. CUBA CARI KONSEP GUNA AI DULU
+    concept_text = ""
     try:
         topic_model = genai.GenerativeModel('gemini-1.5-flash')
         topic_prompt = f"""
-        Read this business description: "{desc}"
+        Extract the core product concept from this description in 2-4 words (Malay/English).
+        Do NOT use the brand name. Focus on what it IS.
         
-        Identify the CORE PRODUCT/SERVICE concept in 2-3 words (Malay or English).
-        Do NOT use proper nouns or brand names.
+        Description: "{desc}"
         
-        Example 1: "App scan kucing sakit"
-        Example 2: "Kopi murah student"
-        Example 3: "Platform cari rumah sewa"
+        Examples:
+        - "Selling coffee" -> "kopi murah sedap"
+        - "App for cats" -> "app scan kucing"
+        - "Delivery food" -> "delivery makanan kampung"
         
         Output ONLY the text.
         """
@@ -138,19 +137,30 @@ def generate_simulated_twitter_data(title, desc):
             concept_text = topic_res.text.strip().lower()
     except:
         pass
-            
-    # --- GENERATE TWEET ---
+
+    # 2. KALAU AI GAGAL, GUNA MANUAL EXTRACTION (BACKUP KUAT)
+    if not concept_text or len(concept_text) > 30:
+        # Cari keyword penting secara manual kalau AI jem
+        words = desc.lower().split()
+        if "app" in words: concept_text = "app macam ni"
+        elif "coffee" in words or "kopi" in words: concept_text = "kopi sedap murah"
+        elif "food" in words or "makanan" in words: concept_text = "service delivery makanan"
+        elif "cat" in words or "kucing" in words: concept_text = "alat jaga kucing"
+        elif "system" in words: concept_text = "sistem power macam ni"
+        else: concept_text = f"projek {title}" # Last resort
+
+    # 3. GENERATE TWEET GUNA KONSEP TU
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Act as 15 Malaysian Twitter users talking about a PROBLEM or DESIRE related to: "{concept_text}".
-        Context: The product doesn't exist yet, people are wishing for it.
+        Act as 15 Malaysian Twitter users.
+        Topic: People wishing for or complaining about the lack of "{concept_text}".
+        Context: This solution doesn't exist yet in their area.
         
         Generate 15 unique tweets.
-        - Tone: Casual, Slang, Berangan, Wishing.
-        - Keywords: "Kalaulah ada", "I wish", "Perlukan", "Susah la takde", "Mana nak cari".
-        - Mention "{concept_text}" naturally as a solution they want.
-        - Sentiment: 5 Positive (Want it), 5 Neutral (Asking), 5 Negative (Complaining about current problem).
+        - MUST mention "{concept_text}" explicitly.
+        - Tone: "Kalaulah ada...", "Stress takde...", "Perlukan...".
+        - Mix Malay/English/Manglish.
         
         Output format JSON ONLY:
         [
@@ -162,43 +172,44 @@ def generate_simulated_twitter_data(title, desc):
         clean_text = res.text.replace("```json", "").replace("```", "").strip()
         tweets = json.loads(clean_text)
     except Exception as e:
-        print(f"AI Failed, using Smart Backup: {e}")
+        print(f"AI Failed, using Template Backup: {e}")
     
-    # --- SMART BACKUP (OFFLINE MODE) ---
+    # 4. TEMPLATE BACKUP (KALAU AI TWEET GAGAL TERUS)
     if len(tweets) < 10:
         usernames = ["@AhmadAlbab", "@GadisTiktok", "@AbangTesla", "@MakcikBawang", 
                      "@InvestorMudah", "@KakiMakan", "@TechFreak", "@MamatKodi", 
                      "@CikBunga", "@BudakU", "@KerjaKeras", "@BossSusu", "@ViralKini", 
                      "@SukaTravel", "@NetizenMals"]
         
+        # Template yang memaksa sebut {c}
         pos_templates = [
-            "Weh, kalaulah ada {c} kat sini, kan best! 🔥",
-            "Sumpah aku perlukan {c} sekarang. Penat la cari manual.",
-            "Bila la Malaysia nak ada {c} yang proper eh?",
-            "Serious talk, siapa buat {c}, aku support terus!",
-            "Fuyoh, imagine kalau ada {c}. Senang kerja aku.",
-            "Tolonglah wujudkan {c} untuk student macam kami. 🙏",
-            "Mana nak cari {c} yang murah eh? Semua mahal."
+            "Weh, kalaulah ada {c} kat area sini, confirm laku keras! 🔥",
+            "Sumpah aku perlukan {c} sekarang. Penat cari manual.",
+            "Bila la nak ada {c} yang proper eh? Susah hidup.",
+            "Serious talk, siapa buat {c} harga student, aku support!",
+            "Fuyoh, imagine kalau ada {c}. Senang kerja aku hari-hari.",
+            "Tolonglah wujudkan {c} cepat sikit. Demand tinggi ni.",
+            "Mana nak cari {c} yang best eh? Semua hampeh."
         ]
         
         neg_templates = [
-            "Stress gila takde {c} time emergency macam ni. 😒",
-            "Kenapa la susah sangat nak cari {c} kat area ni?",
+            "Stress gila takde {c} time emergency. 😒",
+            "Kenapa la susah sangat nak dapat {c} kat Malaysia ni?",
             "Menyampah aku, sampai sekarang takde solution pasal {c}.",
-            "Mahal gila kos sekarang sebab takde {c}.",
-            "Susah hidup kalau takde {c}. Market lembab.",
-            "Tolonglah jangan scam kalau ada yang offer {c}.",
-            "Aku dah give up cari {c}. Semua indah khabar dari rupa."
+            "Mahal gila kos hidup sebab takde {c}.",
+            "Susah hidup kalau takde {c}. Lembab gila progress.",
+            "Aku sanggup bayar lebih kalau ada {c} yang function.",
+            "Give up dah cari {c}. Semua scam je lebih."
         ]
         
         neu_templates = [
             "Korang rasa okay tak kalau ada orang buat {c}? 🤔",
-            "Tengah survey pasal {c}, ada demand ke?",
-            "Perlu ke sebenarnya {c} ni? Atau aku je melebih?",
+            "Tengah survey pasal {c}, ramai ke nak guna?",
+            "Perlu ke sebenarnya {c} ni? Ke aku je melebih?",
             "Macam mana nak solve masalah ni eh? Guna {c} okay tak?",
             "Baru terfikir idea pasal {c}. Korang nak tak?",
-            "Ada sesiapa pernah nampak {c} kat KL?",
-            "Not sure if {c} is necessary, tapi boleh la try kalau ada."
+            "Ada sesiapa pernah nampak {c} kat area KL?",
+            "Not sure if {c} is good, tapi kalau ada nak try la."
         ]
 
         target_count = 15

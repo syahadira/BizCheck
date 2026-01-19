@@ -36,18 +36,20 @@ except ImportError:
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="BizCheck Pro", page_icon="🚀", layout="wide")
 
-# --- 0. API CONFIGURATION (SECURE MODE) ---
-# Kod ini HANYA akan baca dari Streamlit Secrets.
-# TIADA lagi key yang hardcoded di sini.
+# --- 0. API CONFIGURATION (HYBRID SAFE MODE) ---
+# Backup Key (Untuk kecemasan kalau Secrets gagal dibaca)
+BACKUP_KEY = "AIzaSyBfG4vvrTxWs0ZeVNu2vA4NMXBISYTogFQ"
+
 try:
+    # Cuba cari dalam Secrets dulu (Cara Betul)
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     else:
-        st.error("🚨 API Key hilang! Sila set GOOGLE_API_KEY di Streamlit Secrets.")
-        st.stop() # App akan berhenti di sini kalau tiada key
+        # Kalau tak jumpa, guna Backup Key supaya tak Crash masa demo
+        genai.configure(api_key=BACKUP_KEY)
 except Exception as e:
-    st.error(f"🚨 Masalah Konfigurasi API: {e}")
-    st.stop()
+    # Kalau error pelik-pelik, guna backup juga
+    genai.configure(api_key=BACKUP_KEY)
 
 # --- 1. DATABASE SETUP ---
 def init_db():
@@ -109,33 +111,40 @@ def generate_swot(industry, sentiment_score, desc, title):
             "T": ["Competitors with bigger budget", "Economic instability", "Changing consumer trends"]
         }
 
-# --- SMART DYNAMIC TWITTER GENERATOR ---
+# --- SMART DYNAMIC TWITTER GENERATOR (UPDATED & LOGICAL) ---
 def generate_simulated_twitter_data(title, desc):
     tweets = []
     
-    def extract_keywords(text):
-        ignore_words = ["saya", "aku", "kita", "nak", "mau", "ingin", "buat", "untuk", "bagi", "di", 
-                        "ke", "dan", "yang", "i", "want", "to", "create", "a", "an", "the", "for", "is", "are"]
-        words = text.split()
-        meaningful_words = [w for w in words if w.lower() not in ignore_words and len(w) > 3]
-        if meaningful_words:
-            return " ".join(meaningful_words[:4]) 
-        else:
-            return title
+    # DEFAULT BACKUP: Guna nama industri kalau AI gagal cari topik
+    concept_text = title
 
-    concept_text = extract_keywords(desc)
-    
-    # --- CUBA AI DULU (ONLINE) ---
+    # --- LANGKAH 1: CARI TOPIK UTAMA GUNA AI ---
+    try:
+        topic_model = genai.GenerativeModel('gemini-1.5-flash')
+        topic_prompt = f"""
+        Extract the main product concept from this description in 2-4 words (Malay or English).
+        Description: "{desc}"
+        Example Output: "Delivery Santan", "Sistem e-Wallet", "Robot Cuci Rumah"
+        Output ONLY the text. No explanation.
+        """
+        topic_res = topic_model.generate_content(topic_prompt)
+        if topic_res.text:
+            concept_text = topic_res.text.strip()
+    except:
+        pass
+            
+    # --- LANGKAH 2: GENERATE TWEET BERDASARKAN TOPIK TU ---
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Act as 15 different Malaysian Twitter users reacting to a NEW business idea: "{concept_text}".
+        Act as 15 different Malaysian Twitter users reacting to this concept: "{concept_text}".
         Context: {desc}
+        
         Generate 15 unique tweets.
-        - Mix English, Malay, Manglish.
-        - Use slang: "fuyoh", "padu", "mahal gila", "scam", "mantap", "racun".
-        - Mention the concept "{concept_text}" naturally.
-        - Sentiment: 5 Positive, 5 Neutral, 5 Negative.
+        - The tweets must talk about the CONCEPT/FUNCTION ("{concept_text}"), NOT just the brand name.
+        - Mix English, Malay, Manglish (e.g., "fuyoh", "mantap", "scam ke?", "take my money").
+        - Sentiment Distribution: 5 Positive, 5 Neutral, 5 Negative.
+        
         Output format JSON ONLY:
         [
             {{"handle": "@username", "content": "tweet content", "likes": 12, "time": "2h", "sentiment": "Positive"}},
@@ -156,23 +165,23 @@ def generate_simulated_twitter_data(title, desc):
                      "@SukaTravel", "@NetizenMals"]
         
         pos_templates = [
-            "Weh, kalau wujud {c} kat Malaysia, confirm aku beli! 🔥",
-            "Finally ada idea pasal {c}. Shut up and take my money! 💸",
-            "Aku rasa projek {c} ni boleh pergi jauh. Support lokal bossku!",
+            "Weh, kalau betul ada {c} kat Malaysia, confirm aku guna! 🔥",
+            "Finally ada solution pasal {c}. Shut up and take my money! 💸",
+            "Aku rasa idea {c} ni boleh pergi jauh. Support lokal!",
             "Baru baca pasal {c}, not bad la idea dia. Kreatif.",
-            "Fuyoh, {c} ni macam game changer untuk industry ni.",
-            "Serious talk, aku perlukan solution {c} dalam hidup aku sekarang. 😂",
+            "Fuyoh, {c} ni macam game changer weh.",
+            "Serious talk, aku perlukan {c} dalam hidup aku sekarang. 😂",
             "Mantap idea {c} ni. Harap execution dia pun padu.",
             "Ni yang kita mahukan! {c} memang function teruk."
         ]
         
         neg_templates = [
-            "Apa benda la idea {c} ni. Macam takde function je. 😒",
-            "Mahal gila kot kalau nak buat {c} ni. Siapa je mampu?",
+            "Apa benda la {c} ni. Macam takde function je. 😒",
+            "Mahal gila kot nak buat {c}. Siapa je mampu?",
             "Scam ke ni? Hati-hati guys dengan idea {c} macam ni.",
             "Hmm, {c} lagi? Macam dah berlambak orang buat.",
-            "Overrated la idea {c}. Indah khabar dari rupa.",
-            "Susah nak jalan la bisnes {c} kat Malaysia ni. Market kecik.",
+            "Overrated la {c}. Indah khabar dari rupa.",
+            "Susah nak jalan la {c} kat Malaysia ni. Market kecik.",
             "Tolonglah jangan buat {c} kalau takde experience. Nanti lingkup."
         ]
         
@@ -202,7 +211,7 @@ def generate_simulated_twitter_data(title, desc):
                 txt = random.choice(neu_templates)
                 neu_templates.remove(txt)
             
-            if txt == "": txt = f"Review untuk {concept_text} ni..." 
+            if txt == "": txt = f"Review untuk idea {concept_text} ni..." 
 
             final_content = txt.replace("{c}", concept_text)
             

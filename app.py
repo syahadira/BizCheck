@@ -38,12 +38,10 @@ st.set_page_config(page_title="BizCheck Pro", page_icon="🚀", layout="wide")
 
 # --- 0. API CONFIGURATION (STRICTLY SECURE MODE) ---
 # Kod ini HANYA membaca dari Streamlit Secrets.
-# TIADA KEY yang ditulis di sini demi keselamatan.
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     else:
-        # Kalau tak jumpa Secret, App akan berhenti dan minta owner set key.
         st.error("🚨 Ralat Keselamatan: API Key tidak dijumpai dalam Secrets.")
         st.info("Sila pergi ke Settings > Secrets dan masukkan GOOGLE_API_KEY.")
         st.stop()
@@ -111,7 +109,7 @@ def generate_swot(industry, sentiment_score, desc, title):
             "T": ["Competitors with bigger budget", "Economic instability", "Changing consumer trends"]
         }
 
-# --- SMART DYNAMIC TWITTER GENERATOR (FIXED: WAJIB SEBUT KONSEP) ---
+# --- SMART DYNAMIC TWITTER GENERATOR ---
 def generate_simulated_twitter_data(title, desc):
     tweets = []
     
@@ -138,16 +136,15 @@ def generate_simulated_twitter_data(title, desc):
     except:
         pass
 
-    # 2. KALAU AI GAGAL, GUNA MANUAL EXTRACTION (BACKUP KUAT)
+    # 2. KALAU AI GAGAL, GUNA MANUAL EXTRACTION
     if not concept_text or len(concept_text) > 30:
-        # Cari keyword penting secara manual kalau AI jem
         words = desc.lower().split()
         if "app" in words: concept_text = "app macam ni"
         elif "coffee" in words or "kopi" in words: concept_text = "kopi sedap murah"
         elif "food" in words or "makanan" in words: concept_text = "service delivery makanan"
         elif "cat" in words or "kucing" in words: concept_text = "alat jaga kucing"
         elif "system" in words: concept_text = "sistem power macam ni"
-        else: concept_text = f"projek {title}" # Last resort
+        else: concept_text = f"projek {title}"
 
     # 3. GENERATE TWEET GUNA KONSEP TU
     try:
@@ -181,7 +178,6 @@ def generate_simulated_twitter_data(title, desc):
                      "@CikBunga", "@BudakU", "@KerjaKeras", "@BossSusu", "@ViralKini", 
                      "@SukaTravel", "@NetizenMals"]
         
-        # Template yang memaksa sebut {c}
         pos_templates = [
             "Weh, kalaulah ada {c} kat area sini, confirm laku keras! 🔥",
             "Sumpah aku perlukan {c} sekarang. Penat cari manual.",
@@ -472,7 +468,8 @@ def main():
                 st.session_state['trends_data'] = trends_df
                 progress_bar.progress(50)
 
-                status_box.info("🐦 Simulating 30 Social Media Interactions...")
+                # UPDATED: LOADING TEXT MATCHING LOGIC
+                status_box.info("🐦 Simulating 15 Personas & Generating Sentiment Scores...")
                 social_data = generate_simulated_twitter_data(title, desc)
                 st.session_state['social_data'] = social_data
                 progress_bar.progress(70)
@@ -511,7 +508,18 @@ def main():
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Viability Score", f"{st.session_state['viability_score']}/100")
             with c2: st.metric("Sentiment", st.session_state['sentiment_result']['label'])
-            with c3: st.metric("Data Points", "30 Social + 5 Comps")
+            
+            # --- CARA 1: LOGIC FIX (15 Text + 15 Scores = 30 Points) ---
+            social_cnt = len(st.session_state.get('social_data', []))
+            with c3: 
+                st.metric(
+                    label="Data Points", 
+                    value=f"{social_cnt * 2} Processed", 
+                    delta=f"{social_cnt} Tweets + {social_cnt} Scores",
+                    delta_color="off",
+                    help="Combination of Qualitative (Tweets) and Quantitative (Sentiment Scores) data."
+                )
+            # -----------------------------------------------------------
             
             st.divider()
             
@@ -522,7 +530,7 @@ def main():
             st.divider()
 
             st.subheader("🐦 Public Sentiment (X Simulation)")
-            st.caption(f"Analysis based on 30 simulated tweets about '{st.session_state['biz_title']}'.")
+            st.caption(f"Analysis based on {social_cnt} simulated tweets about '{st.session_state['biz_title']}'.")
             
             social_data = st.session_state.get('social_data', [])
             
